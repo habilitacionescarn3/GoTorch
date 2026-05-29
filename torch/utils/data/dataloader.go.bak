@@ -1,0 +1,205 @@
+// Package data provides dataset and dataloader utilities for GoTorch.
+// This replaces torch/utils/data/__init__.py, dataloader.py, dataset.py.
+//
+// Python:  from torch.utils.data import DataLoader, TensorDataset, Dataset
+// Go:      import "github.com/Sarkar-AGI/GoTorch/torch/utils/data"
+
+package data
+
+/*
+#cgo CFLAGS:  -I../../../csrc/go_binding
+#include "../../../csrc/go_binding/torch_api.h"
+*/
+import "C"
+import (
+	"math/rand"
+)
+
+// Dataset is the base interface all datasets must implement.
+// Mirrors torch.utils.data.Dataset.
+//
+// Python:
+//   class MyDataset(Dataset):
+//       def __len__(self): return N
+//       def __getitem__(self, idx): return x[idx], y[idx]
+// Go:
+//   type MyDataset struct{}
+//   func (d *MyDataset) Len() int                       { return N }
+//   func (d *MyDataset) GetItem(i int) (C.Tensor, C.Tensor) { ... }
+type Dataset interface {
+	Len() int
+	GetItem(index int) (input C.Tensor, target C.Tensor)
+}
+
+// Batch holds one mini-batch of inputs and targets.
+type Batch struct {
+	Inputs  C.Tensor
+	Targets C.Tensor
+	Size    int
+}
+
+// DataLoader iterates over a Dataset in mini-batches.
+// Mirrors torch.utils.data.DataLoader.
+//
+// Python:
+//   loader = DataLoader(dataset, batch_size=32, shuffle=True)
+//   for batch_x, batch_y in loader:
+//       ...
+// Go:
+//   loader := data.NewDataLoader(dataset, 32, true)
+//   for loader.HasNext() {
+//       batch := loader.Next()
+//       ...
+//   }
+type DataLoader struct {
+	dataset   Dataset
+	BatchSize int
+	Shuffle   bool
+	indices   []int
+	pos       int
+}
+
+// NewDataLoader creates a DataLoader.
+// Mirrors DataLoader(dataset, batch_size=32, shuffle=True, num_workers=0).
+func NewDataLoader(dataset Dataset, batchSize int, shuffle bool) *DataLoader {
+	n := dataset.Len()
+	indices := make([]int, n)
+	for i := range indices {
+		indices[i] = i
+	}
+	dl := &DataLoader{
+		dataset:   dataset,
+		BatchSize: batchSize,
+		Shuffle:   shuffle,
+		indices:   indices,
+	}
+	if shuffle {
+		rand.Shuffle(n, func(i, j int) { indices[i], indices[j] = indices[j], indices[i] })
+	}
+	return dl
+}
+
+// HasNext returns true if there are more batches remaining.
+func (dl *DataLoader) HasNext() bool { return dl.pos < len(dl.indices) }
+
+// Next returns the next Batch.
+// Mirrors iterating over a GoTorch DataLoader.
+func (dl *DataLoader) Next() *Batch {
+	end := dl.pos + dl.BatchSize
+	if end > len(dl.indices) {
+		end = len(dl.indices)
+	}
+	batchIdx := dl.indices[dl.pos:end]
+	dl.pos = end
+	bs := len(batchIdx)
+
+	// Get items and cat along dim=0
+	inputs := make([]C.Tensor, bs)
+	targets := make([]C.Tensor, bs)
+	for i, idx := range batchIdx {
+		inp, tgt := dl.dataset.GetItem(idx)
+		// unsqueeze to add batch dim if needed
+		inputs[i] = C.gotorch_unsqueeze(inp, 0)
+		targets[i] = C.gotorch_unsqueeze(tgt, 0)
+	}
+
+	batchInput := C.gotorch_cat(&inputs[0], C.int64_t(bs), 0)
+	batchTarget := C.gotorch_cat(&targets[0], C.int64_t(bs), 0)
+
+	return &Batch{
+		Inputs:  batchInput,
+		Targets: batchTarget,
+		Size:    bs,
+	}
+}
+
+// Reset resets the DataLoader for a new epoch.
+// Mirrors starting a new iteration loop in GoTorch.
+func (dl *DataLoader) Reset() {
+	dl.pos = 0
+	if dl.Shuffle {
+		rand.Shuffle(len(dl.indices), func(i, j int) {
+			dl.indices[i], dl.indices[j] = dl.indices[j], dl.indices[i]
+		})
+	}
+}
+
+// Len returns the number of batches. Mirrors len(dataloader).
+func (dl *DataLoader) Len() int {
+	n := dl.dataset.Len()
+	batches := n / dl.BatchSize
+	if n%dl.BatchSize != 0 {
+		batches++
+	}
+	return batches
+}
+
+// ─── TensorDataset ───────────────────────────────────────────────────────────
+
+// TensorDataset wraps input and target tensors as a Dataset.
+// Mirrors torch.utils.data.TensorDataset.
+//
+// Python: dataset = TensorDataset(X, y)
+// Go:     dataset := data.NewTensorDataset(X, y)
+type TensorDataset struct {
+	Inputs  C.Tensor
+	Targets C.Tensor
+	n       int
+}
+
+// NewTensorDataset creates a TensorDataset from two tensors.
+func NewTensorDataset(inputs, targets C.Tensor) *TensorDataset {
+	n := int(C.gotorch_tensor_shape(inputs)[0])
+	return &TensorDataset{Inputs: inputs, Targets: targets, n: n}
+}
+
+// Len returns the number of samples. Mirrors len(dataset).
+func (td *TensorDataset) Len() int { return td.n }
+
+// GetItem returns the i-th (input, target) pair using tensor slicing.
+// Mirrors dataset[i].
+func (td *TensorDataset) GetItem(i int) (C.Tensor, C.Tensor) {
+	inp := C.gotorch_slice(td.Inputs, 0, C.int64_t(i), C.int64_t(i+1), 1)
+	tgt := C.gotorch_slice(td.Targets, 0, C.int64_t(i), C.int64_t(i+1), 1)
+	return C.gotorch_squeeze(inp), C.gotorch_squeeze(tgt)
+}
+
+// ─── RandomSampler / SequentialSampler ──────────────────────────────────────
+
+// RandomSampler generates random indices. Mirrors torch.utils.data.RandomSampler.
+type RandomSampler struct {
+	n           int
+	Replacement bool
+}
+
+func NewRandomSampler(n int, replacement bool) *RandomSampler {
+	return &RandomSampler{n: n, Replacement: replacement}
+}
+
+func (s *RandomSampler) Sample() []int {
+	indices := make([]int, s.n)
+	if s.Replacement {
+		for i := range indices {
+			indices[i] = rand.Intn(s.n)
+		}
+	} else {
+		for i := range indices {
+			indices[i] = i
+		}
+		rand.Shuffle(s.n, func(i, j int) { indices[i], indices[j] = indices[j], indices[i] })
+	}
+	return indices
+}
+
+// SequentialSampler returns indices in order. Mirrors torch.utils.data.SequentialSampler.
+type SequentialSampler struct{ n int }
+
+func NewSequentialSampler(n int) *SequentialSampler { return &SequentialSampler{n: n} }
+
+func (s *SequentialSampler) Sample() []int {
+	indices := make([]int, s.n)
+	for i := range indices {
+		indices[i] = i
+	}
+	return indices
+}

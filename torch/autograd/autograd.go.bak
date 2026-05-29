@@ -1,0 +1,108 @@
+// Package autograd provides automatic differentiation utilities for GoTorch.
+// This replaces torch/autograd/__init__.py.
+// The actual autograd engine lives in libtorch C++; this package exposes
+// the Go-level API for it.
+//
+// Python:  import torch.autograd
+// Go:      import "github.com/Sarkar-AGI/GoTorch/torch/autograd"
+
+package autograd
+
+/*
+#cgo CFLAGS:  -I../../csrc/go_binding
+#include "../../csrc/go_binding/torch_api.h"
+*/
+import "C"
+
+// ─── Gradient control ────────────────────────────────────────────────────────
+
+// NoGrad disables gradient computation globally.
+// Mirrors: with torch.no_grad():
+//
+// Python:
+//   with torch.no_grad():
+//       output = model(input)
+// Go:
+//   autograd.NoGrad()
+//   output := model.Forward(input)
+//   autograd.EnableGrad()
+//
+// Or use the functional form: autograd.WithNoGrad(func() { ... })
+func NoGrad() { C.gotorch_set_grad_enabled(0) }
+
+// EnableGrad re-enables gradient computation.
+// Mirrors torch.enable_grad() / leaving the no_grad context.
+func EnableGrad() { C.gotorch_set_grad_enabled(1) }
+
+// IsGradEnabled returns whether gradient computation is currently enabled.
+// Mirrors torch.is_grad_enabled().
+func IsGradEnabled() bool { return C.gotorch_is_grad_enabled() != 0 }
+
+// WithNoGrad executes fn with gradient computation disabled, then restores
+// the previous state. This is the idiomatic Go replacement for Python's
+// `with torch.no_grad():` context manager.
+//
+// Python:
+//   with torch.no_grad():
+//       val_loss = model(val_x)
+// Go:
+//   autograd.WithNoGrad(func() {
+//       valLoss = model.Forward(valX)
+//   })
+func WithNoGrad(fn func()) {
+	was := IsGradEnabled()
+	NoGrad()
+	fn()
+	if was {
+		EnableGrad()
+	}
+}
+
+// WithGradEnabled executes fn with gradient computation enabled.
+// Mirrors torch.enable_grad() as a context manager.
+func WithGradEnabled(fn func()) {
+	was := IsGradEnabled()
+	EnableGrad()
+	fn()
+	if !was {
+		NoGrad()
+	}
+}
+
+// ─── Backward ────────────────────────────────────────────────────────────────
+
+// Backward computes gradients of tensor with respect to graph leaves.
+// Mirrors torch.autograd.backward([tensor]).
+func Backward(tensor C.Tensor) { C.gotorch_backward(tensor) }
+
+// BackwardWithGrad computes gradients with an explicit upstream gradient.
+// Mirrors torch.autograd.backward([tensor], grad_tensors=[grad]).
+func BackwardWithGrad(tensor, grad C.Tensor) { C.gotorch_backward_with_grad(tensor, grad) }
+
+// ─── Gradient utilities ──────────────────────────────────────────────────────
+
+// Grad returns the gradient of a tensor. Mirrors tensor.grad.
+func Grad(tensor C.Tensor) C.Tensor { return C.gotorch_tensor_grad(tensor) }
+
+// ZeroGrad zeroes the gradient of a tensor. Mirrors tensor.grad.zero_().
+func ZeroGrad(tensor C.Tensor) { C.gotorch_tensor_zero_grad(tensor) }
+
+// SetRequiresGrad enables or disables gradient tracking on a tensor.
+// Mirrors tensor.requires_grad_(True/False).
+func SetRequiresGrad(tensor C.Tensor, requires bool) {
+	v := 0
+	if requires {
+		v = 1
+	}
+	C.gotorch_tensor_set_requires_grad(tensor, C.int(v))
+}
+
+// RequiresGrad returns whether a tensor has gradient tracking enabled.
+// Mirrors tensor.requires_grad.
+func RequiresGrad(tensor C.Tensor) bool {
+	return C.gotorch_tensor_requires_grad(tensor) != 0
+}
+
+// Detach returns a new tensor detached from the computation graph.
+// Mirrors tensor.detach().
+func Detach(tensor C.Tensor) C.Tensor { return C.gotorch_detach(tensor) }

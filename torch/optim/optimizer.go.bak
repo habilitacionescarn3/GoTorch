@@ -1,0 +1,308 @@
+// Package optim provides optimization algorithms for GoTorch.
+// This replaces torch/optim/*.py — SGD, Adam, AdamW, RMSprop, lr_scheduler.
+// All optimizers delegate to libtorch C++ via CGo.
+//
+// Python:  import torch.optim as optim
+// Go:      import "github.com/Sarkar-AGI/GoTorch/torch/optim"
+
+package optim
+
+/*
+#cgo CFLAGS:  -I../../csrc/go_binding
+#include "../../csrc/go_binding/torch_api.h"
+*/
+import "C"
+import (
+	"fmt"
+	"math"
+	"runtime"
+)
+
+// Optimizer is the base interface for all optimizers.
+// Mirrors torch.optim.Optimizer.
+type Optimizer interface {
+	Step()
+	ZeroGrad()
+	String() string
+}
+
+func paramPtrs(params []C.Tensor) (*C.Tensor, C.int64_t) {
+	if len(params) == 0 {
+		return nil, 0
+	}
+	return &params[0], C.int64_t(len(params))
+}
+
+// ─── SGD ─────────────────────────────────────────────────────────────────────
+
+// SGDOptions configures the SGD optimizer.
+type SGDOptions struct {
+	LR          float64
+	Momentum    float64
+	WeightDecay float64
+	Dampening   float64
+	Nesterov    bool
+}
+
+// SGD implements Stochastic Gradient Descent. Mirrors torch.optim.SGD.
+//
+// Python: optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+// Go:     optimizer := optim.NewSGD(model.Parameters(), optim.SGDOptions{LR: 0.01, Momentum: 0.9})
+type SGD struct {
+	ptr    C.Optimizer
+	opts   SGDOptions
+	params []C.Tensor
+}
+
+func NewSGD(params []C.Tensor, opts SGDOptions) *SGD {
+	pp, count := paramPtrs(params)
+	nesterov := 0
+	if opts.Nesterov { nesterov = 1 }
+	ptr := C.gotorch_optim_sgd_new(pp, count,
+		C.double(opts.LR), C.double(opts.Momentum),
+		C.double(opts.WeightDecay), C.int(nesterov))
+	o := &SGD{ptr: ptr, opts: opts, params: params}
+	runtime.SetFinalizer(o, func(o *SGD) {
+		if o.ptr != nil { C.gotorch_optim_free(o.ptr); o.ptr = nil }
+	})
+	return o
+}
+
+func (o *SGD) Step()    { C.gotorch_optim_step(o.ptr) }
+func (o *SGD) ZeroGrad() { C.gotorch_optim_zero_grad(o.ptr) }
+func (o *SGD) String() string {
+	return fmt.Sprintf("SGD(lr=%.4f, momentum=%.2f, weight_decay=%.4f, nesterov=%v)",
+		o.opts.LR, o.opts.Momentum, o.opts.WeightDecay, o.opts.Nesterov)
+}
+
+// ─── Adam ────────────────────────────────────────────────────────────────────
+
+// AdamOptions configures Adam / AdamW.
+type AdamOptions struct {
+	LR          float64
+	Beta1       float64
+	Beta2       float64
+	Eps         float64
+	WeightDecay float64
+}
+
+func (o *AdamOptions) defaults() {
+	if o.LR == 0    { o.LR = 1e-3 }
+	if o.Beta1 == 0 { o.Beta1 = 0.9 }
+	if o.Beta2 == 0 { o.Beta2 = 0.999 }
+	if o.Eps == 0   { o.Eps = 1e-8 }
+}
+
+// Adam implements the Adam optimizer. Mirrors torch.optim.Adam.
+//
+// Python: optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+// Go:     optimizer := optim.NewAdam(model.Parameters(), optim.AdamOptions{LR: 1e-3})
+type Adam struct {
+	ptr    C.Optimizer
+	opts   AdamOptions
+	params []C.Tensor
+}
+
+func NewAdam(params []C.Tensor, opts AdamOptions) *Adam {
+	opts.defaults()
+	pp, count := paramPtrs(params)
+	ptr := C.gotorch_optim_adam_new(pp, count,
+		C.double(opts.LR), C.double(opts.Beta1), C.double(opts.Beta2),
+		C.double(opts.Eps), C.double(opts.WeightDecay))
+	o := &Adam{ptr: ptr, opts: opts, params: params}
+	runtime.SetFinalizer(o, func(o *Adam) {
+		if o.ptr != nil { C.gotorch_optim_free(o.ptr); o.ptr = nil }
+	})
+	return o
+}
+
+func (o *Adam) Step()    { C.gotorch_optim_step(o.ptr) }
+func (o *Adam) ZeroGrad() { C.gotorch_optim_zero_grad(o.ptr) }
+func (o *Adam) String() string {
+	return fmt.Sprintf("Adam(lr=%.4f, betas=(%.2f, %.3f), eps=%.0e, weight_decay=%.4f)",
+		o.opts.LR, o.opts.Beta1, o.opts.Beta2, o.opts.Eps, o.opts.WeightDecay)
+}
+
+// ─── AdamW ───────────────────────────────────────────────────────────────────
+
+// AdamW implements Adam with decoupled weight decay. Mirrors torch.optim.AdamW.
+//
+// Python: optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+// Go:     optimizer := optim.NewAdamW(model.Parameters(), optim.AdamOptions{LR: 1e-3, WeightDecay: 0.01})
+type AdamW struct {
+	ptr    C.Optimizer
+	opts   AdamOptions
+	params []C.Tensor
+}
+
+func NewAdamW(params []C.Tensor, opts AdamOptions) *AdamW {
+	opts.defaults()
+	if opts.WeightDecay == 0 { opts.WeightDecay = 0.01 }
+	pp, count := paramPtrs(params)
+	ptr := C.gotorch_optim_adamw_new(pp, count,
+		C.double(opts.LR), C.double(opts.Beta1), C.double(opts.Beta2),
+		C.double(opts.Eps), C.double(opts.WeightDecay))
+	o := &AdamW{ptr: ptr, opts: opts, params: params}
+	runtime.SetFinalizer(o, func(o *AdamW) {
+		if o.ptr != nil { C.gotorch_optim_free(o.ptr); o.ptr = nil }
+	})
+	return o
+}
+
+func (o *AdamW) Step()    { C.gotorch_optim_step(o.ptr) }
+func (o *AdamW) ZeroGrad() { C.gotorch_optim_zero_grad(o.ptr) }
+func (o *AdamW) String() string {
+	return fmt.Sprintf("AdamW(lr=%.4f, betas=(%.2f, %.3f), weight_decay=%.4f)",
+		o.opts.LR, o.opts.Beta1, o.opts.Beta2, o.opts.WeightDecay)
+}
+
+// ─── RMSprop ─────────────────────────────────────────────────────────────────
+
+// RMSpropOptions configures RMSprop.
+type RMSpropOptions struct {
+	LR          float64
+	Alpha       float64
+	Eps         float64
+	WeightDecay float64
+	Momentum    float64
+}
+
+// RMSprop implements the RMSprop optimizer. Mirrors torch.optim.RMSprop.
+type RMSprop struct {
+	ptr    C.Optimizer
+	opts   RMSpropOptions
+	params []C.Tensor
+}
+
+func NewRMSprop(params []C.Tensor, opts RMSpropOptions) *RMSprop {
+	if opts.LR == 0    { opts.LR = 1e-2 }
+	if opts.Alpha == 0 { opts.Alpha = 0.99 }
+	if opts.Eps == 0   { opts.Eps = 1e-8 }
+	pp, count := paramPtrs(params)
+	ptr := C.gotorch_optim_rmsprop_new(pp, count,
+		C.double(opts.LR), C.double(opts.Alpha),
+		C.double(opts.Eps), C.double(opts.WeightDecay))
+	o := &RMSprop{ptr: ptr, opts: opts, params: params}
+	runtime.SetFinalizer(o, func(o *RMSprop) {
+		if o.ptr != nil { C.gotorch_optim_free(o.ptr); o.ptr = nil }
+	})
+	return o
+}
+
+func (o *RMSprop) Step()    { C.gotorch_optim_step(o.ptr) }
+func (o *RMSprop) ZeroGrad() { C.gotorch_optim_zero_grad(o.ptr) }
+func (o *RMSprop) String() string {
+	return fmt.Sprintf("RMSprop(lr=%.4f, alpha=%.3f, eps=%.0e)",
+		o.opts.LR, o.opts.Alpha, o.opts.Eps)
+}
+
+// ─── LR Schedulers (replaces torch/optim/lr_scheduler.py) ───────────────────
+
+// StepLR decays LR by gamma every stepSize epochs. Mirrors torch.optim.lr_scheduler.StepLR.
+//
+// Python: scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
+// Go:     scheduler := optim.NewStepLR(optimizer, 10, 0.1)
+type StepLR struct {
+	opt       *SGD
+	StepSize  int
+	Gamma     float64
+	epoch     int
+}
+
+func NewStepLR(opt *SGD, stepSize int, gamma float64) *StepLR {
+	return &StepLR{opt: opt, StepSize: stepSize, Gamma: gamma}
+}
+
+func (s *StepLR) Step() {
+	s.epoch++
+	if s.epoch%s.StepSize == 0 {
+		newOpts := s.opt.opts
+		newOpts.LR *= s.Gamma
+		s.opt.opts = newOpts
+		rebuildSGD(s.opt)
+	}
+}
+
+func rebuildSGD(o *SGD) {
+	if o.ptr != nil { C.gotorch_optim_free(o.ptr) }
+	pp, count := paramPtrs(o.params)
+	nesterov := 0
+	if o.opts.Nesterov { nesterov = 1 }
+	o.ptr = C.gotorch_optim_sgd_new(pp, count,
+		C.double(o.opts.LR), C.double(o.opts.Momentum),
+		C.double(o.opts.WeightDecay), C.int(nesterov))
+}
+
+func rebuildAdam(o *Adam) {
+	if o.ptr != nil { C.gotorch_optim_free(o.ptr) }
+	pp, count := paramPtrs(o.params)
+	o.ptr = C.gotorch_optim_adam_new(pp, count,
+		C.double(o.opts.LR), C.double(o.opts.Beta1), C.double(o.opts.Beta2),
+		C.double(o.opts.Eps), C.double(o.opts.WeightDecay))
+}
+
+// CosineAnnealingLR implements cosine annealing. Mirrors lr_scheduler.CosineAnnealingLR.
+//
+// Python: scheduler = CosineAnnealingLR(optimizer, T_max=100, eta_min=0)
+// Go:     scheduler := optim.NewCosineAnnealingLR(optimizer, 100, 0)
+type CosineAnnealingLR struct {
+	opt       *Adam
+	TMax      int
+	EtaMin    float64
+	epoch     int
+	initialLR float64
+}
+
+func NewCosineAnnealingLR(opt *Adam, tMax int, etaMin float64) *CosineAnnealingLR {
+	return &CosineAnnealingLR{opt: opt, TMax: tMax, EtaMin: etaMin, initialLR: opt.opts.LR}
+}
+
+func (c *CosineAnnealingLR) Step() {
+	c.epoch++
+	newLR := c.EtaMin + 0.5*(c.initialLR-c.EtaMin)*
+		(1+math.Cos(math.Pi*float64(c.epoch)/float64(c.TMax)))
+	c.opt.opts.LR = newLR
+	rebuildAdam(c.opt)
+}
+
+// ReduceLROnPlateau reduces LR when metric stops improving.
+// Mirrors torch.optim.lr_scheduler.ReduceLROnPlateau.
+//
+// Python: scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10)
+// Go:     scheduler := optim.NewReduceLROnPlateau(optimizer, "min", 0.1, 10, 0)
+type ReduceLROnPlateau struct {
+	opt       *Adam
+	Factor    float64
+	Patience  int
+	MinLR     float64
+	Mode      string
+	bestVal   float64
+	waitCount int
+}
+
+func NewReduceLROnPlateau(opt *Adam, mode string, factor float64, patience int, minLR float64) *ReduceLROnPlateau {
+	best := math.MaxFloat64
+	if mode == "max" { best = -math.MaxFloat64 }
+	return &ReduceLROnPlateau{opt: opt, Factor: factor, Patience: patience,
+		MinLR: minLR, Mode: mode, bestVal: best}
+}
+
+// StepWithMetric checks metric and adjusts LR. Mirrors scheduler.step(metric).
+func (r *ReduceLROnPlateau) StepWithMetric(metric float64) {
+	improved := (r.Mode == "min" && metric < r.bestVal) ||
+		(r.Mode == "max" && metric > r.bestVal)
+	if improved {
+		r.bestVal = metric
+		r.waitCount = 0
+	} else {
+		r.waitCount++
+		if r.waitCount >= r.Patience {
+			newLR := math.Max(r.opt.opts.LR*r.Factor, r.MinLR)
+			r.opt.opts.LR = newLR
+			rebuildAdam(r.opt)
+			r.waitCount = 0
+		}
+	}
+}
+
+func (r *ReduceLROnPlateau) Step() {}

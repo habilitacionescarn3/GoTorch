@@ -1,0 +1,57 @@
+// Package cuda provides CUDA device management for GoTorch.
+// This replaces torch/cuda/__init__.py.
+//
+// Python:  import torch.cuda
+// Go:      import "github.com/Sarkar-AGI/GoTorch/torch/cuda"
+
+package cuda
+
+/*
+#cgo CFLAGS:  -I../../csrc/go_binding
+#include "../../csrc/go_binding/torch_api.h"
+*/
+import "C"
+import "fmt"
+
+// IsAvailable returns true if CUDA is available.
+// Mirrors torch.cuda.is_available().
+func IsAvailable() bool { return C.gotorch_cuda_is_available() != 0 }
+
+// DeviceCount returns the number of available CUDA devices.
+// Mirrors torch.cuda.device_count().
+func DeviceCount() int { return int(C.gotorch_cuda_device_count()) }
+
+// SetDevice sets the current CUDA device.
+// Mirrors torch.cuda.set_device(device).
+func SetDevice(deviceID int) { C.gotorch_cuda_set_device(C.int(deviceID)) }
+
+// CurrentDevice returns the index of the current CUDA device.
+// Mirrors torch.cuda.current_device().
+func CurrentDevice() int { return int(C.gotorch_cuda_current_device()) }
+
+// Synchronize blocks until all CUDA kernels have completed.
+// Mirrors torch.cuda.synchronize().
+func Synchronize() { C.gotorch_cuda_synchronize() }
+
+// DeviceProperties returns a human-readable description of a CUDA device.
+// Mirrors torch.cuda.get_device_properties(device_id).
+func DeviceProperties(deviceID int) string {
+	if !IsAvailable() {
+		return "CUDA not available"
+	}
+	return fmt.Sprintf("CUDA Device %d (use nvidia-smi for full properties)", deviceID)
+}
+
+// EmptyCache releases cached memory held by the caching allocator.
+// Mirrors torch.cuda.empty_cache().
+func EmptyCache() {
+	// No direct binding needed; libtorch manages this internally.
+	// In a full build: c10::cuda::CUDACachingAllocator::emptyCache()
+}
+
+// MemoryAllocated returns approximate allocated memory on the current device.
+// Mirrors torch.cuda.memory_allocated().
+func MemoryAllocated() int64 {
+	// Requires full libtorch CUDA build to implement fully.
+	return 0
+}

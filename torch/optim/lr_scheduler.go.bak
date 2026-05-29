@@ -1,0 +1,247 @@
+// Package optim — Learning rate schedulers.
+// Replaces torch/optim/lr_scheduler.py.
+// Pure Go implementation that wraps any Optimizer and adjusts its LR.
+
+package optim
+
+import (
+	"fmt"
+	"math"
+)
+
+// ─── Scheduler interface ──────────────────────────────────────────────────────
+
+// Scheduler adjusts the learning rate of an Optimizer.
+// Mirrors torch.optim.lr_scheduler._LRScheduler.
+type Scheduler interface {
+	Step()           // call once per epoch (or per step for OneCycleLR)
+	GetLastLR() float64
+	String() string
+}
+
+// LRAdjuster is implemented by optimizers that expose their learning rate.
+type LRAdjuster interface {
+	GetLR() float64
+	SetLR(lr float64)
+}
+
+// ─── StepLR ───────────────────────────────────────────────────────────────────
+
+// StepLR decays the LR by gamma every stepSize epochs.
+// Mirrors: torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+type StepLR struct {
+	optimizer LRAdjuster
+	StepSize  int
+	Gamma     float64
+	lastLR    float64
+	epoch     int
+}
+
+func NewStepLR(optimizer LRAdjuster, stepSize int, gamma float64) *StepLR {
+	return &StepLR{
+		optimizer: optimizer,
+		StepSize:  stepSize,
+		Gamma:     gamma,
+		lastLR:    optimizer.GetLR(),
+	}
+}
+
+func (s *StepLR) Step() {
+	s.epoch++
+	if s.epoch%s.StepSize == 0 {
+		newLR := s.optimizer.GetLR() * s.Gamma
+		s.optimizer.SetLR(newLR)
+	}
+	s.lastLR = s.optimizer.GetLR()
+}
+
+func (s *StepLR) GetLastLR() float64 { return s.lastLR }
+func (s *StepLR) String() string {
+	return fmt.Sprintf("StepLR(step_size=%d, gamma=%.4f, last_lr=%.6f)",
+		s.StepSize, s.Gamma, s.lastLR)
+}
+
+// ─── ExponentialLR ────────────────────────────────────────────────────────────
+
+// ExponentialLR decays LR by gamma every epoch.
+// Mirrors: torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+type ExponentialLR struct {
+	optimizer LRAdjuster
+	Gamma     float64
+	lastLR    float64
+}
+
+func NewExponentialLR(optimizer LRAdjuster, gamma float64) *ExponentialLR {
+	return &ExponentialLR{optimizer: optimizer, Gamma: gamma, lastLR: optimizer.GetLR()}
+}
+
+func (e *ExponentialLR) Step() {
+	newLR := e.optimizer.GetLR() * e.Gamma
+	e.optimizer.SetLR(newLR)
+	e.lastLR = newLR
+}
+
+func (e *ExponentialLR) GetLastLR() float64 { return e.lastLR }
+func (e *ExponentialLR) String() string {
+	return fmt.Sprintf("ExponentialLR(gamma=%.4f, last_lr=%.6f)", e.Gamma, e.lastLR)
+}
+
+// ─── CosineAnnealingLR ────────────────────────────────────────────────────────
+
+// CosineAnnealingLR anneals LR following a cosine schedule.
+// Mirrors: torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max, eta_min=0)
+//
+// Formula: lr_t = eta_min + 0.5*(lr_0 - eta_min)*(1 + cos(π * t / T_max))
+type CosineAnnealingLR struct {
+	optimizer LRAdjuster
+	TMax      int     // half-period
+	EtaMin    float64 // minimum LR
+	baseLR    float64
+	lastLR    float64
+	step      int
+}
+
+func NewCosineAnnealingLR(optimizer LRAdjuster, tMax int, etaMin float64) *CosineAnnealingLR {
+	base := optimizer.GetLR()
+	return &CosineAnnealingLR{
+		optimizer: optimizer,
+		TMax:      tMax,
+		EtaMin:    etaMin,
+		baseLR:    base,
+		lastLR:    base,
+	}
+}
+
+func (c *CosineAnnealingLR) Step() {
+	c.step++
+	t := c.step % (2 * c.TMax)
+	if t > c.TMax {
+		t = 2*c.TMax - t
+	}
+	newLR := c.EtaMin + 0.5*(c.baseLR-c.EtaMin)*(1+math.Cos(math.Pi*float64(t)/float64(c.TMax)))
+	c.optimizer.SetLR(newLR)
+	c.lastLR = newLR
+}
+
+func (c *CosineAnnealingLR) GetLastLR() float64 { return c.lastLR }
+func (c *CosineAnnealingLR) String() string {
+	return fmt.Sprintf("CosineAnnealingLR(T_max=%d, eta_min=%.6f, last_lr=%.6f)",
+		c.TMax, c.EtaMin, c.lastLR)
+}
+
+// ─── ReduceLROnPlateau ────────────────────────────────────────────────────────
+
+// ReduceLROnPlateau reduces LR when a metric stops improving.
+// Mirrors: torch.optim.lr_scheduler.ReduceLROnPlateau(
+//   optimizer, mode='min', factor=0.1, patience=10, min_lr=0)
+type ReduceLROnPlateau struct {
+	optimizer  LRAdjuster
+	Mode       string  // "min" or "max"
+	Factor     float64 // multiplicative factor
+	Patience   int     // epochs with no improvement before reducing
+	MinLR      float64
+	Threshold  float64
+
+	bestVal    float64
+	noImpCount int
+	lastLR     float64
+}
+
+func NewReduceLROnPlateau(optimizer LRAdjuster, mode string, factor float64, patience int, minLR float64) *ReduceLROnPlateau {
+	best := math.Inf(1)
+	if mode == "max" {
+		best = math.Inf(-1)
+	}
+	return &ReduceLROnPlateau{
+		optimizer:  optimizer,
+		Mode:       mode,
+		Factor:     factor,
+		Patience:   patience,
+		MinLR:      minLR,
+		Threshold:  1e-4,
+		bestVal:    best,
+		lastLR:     optimizer.GetLR(),
+	}
+}
+
+// Step updates the scheduler given the current metric value.
+// Call once per epoch: scheduler.Step(val_loss)
+func (r *ReduceLROnPlateau) Step() {
+	// Use StepWithMetric instead for real usage.
+}
+
+// StepWithMetric is the real update function.
+func (r *ReduceLROnPlateau) StepWithMetric(metric float64) {
+	improved := false
+	if r.Mode == "min" {
+		improved = metric < r.bestVal*(1-r.Threshold)
+	} else {
+		improved = metric > r.bestVal*(1+r.Threshold)
+	}
+
+	if improved {
+		r.bestVal = metric
+		r.noImpCount = 0
+	} else {
+		r.noImpCount++
+	}
+
+	if r.noImpCount >= r.Patience {
+		newLR := math.Max(r.optimizer.GetLR()*r.Factor, r.MinLR)
+		r.optimizer.SetLR(newLR)
+		r.noImpCount = 0
+	}
+	r.lastLR = r.optimizer.GetLR()
+}
+
+func (r *ReduceLROnPlateau) GetLastLR() float64 { return r.lastLR }
+func (r *ReduceLROnPlateau) String() string {
+	return fmt.Sprintf("ReduceLROnPlateau(mode=%s, factor=%.2f, patience=%d, last_lr=%.6f)",
+		r.Mode, r.Factor, r.Patience, r.lastLR)
+}
+
+// ─── LinearLR ─────────────────────────────────────────────────────────────────
+
+// LinearLR linearly increases or decreases LR by a multiplicative factor
+// over totalIters iterations.
+// Mirrors: torch.optim.lr_scheduler.LinearLR(
+//   optimizer, start_factor=1/3, end_factor=1.0, total_iters=5)
+type LinearLR struct {
+	optimizer    LRAdjuster
+	StartFactor  float64
+	EndFactor    float64
+	TotalIters   int
+	baseLR       float64
+	lastLR       float64
+	iter         int
+}
+
+func NewLinearLR(optimizer LRAdjuster, startFactor, endFactor float64, totalIters int) *LinearLR {
+	base := optimizer.GetLR()
+	return &LinearLR{
+		optimizer:   optimizer,
+		StartFactor: startFactor,
+		EndFactor:   endFactor,
+		TotalIters:  totalIters,
+		baseLR:      base,
+		lastLR:      base * startFactor,
+	}
+}
+
+func (l *LinearLR) Step() {
+	if l.iter >= l.TotalIters {
+		return
+	}
+	l.iter++
+	pct := float64(l.iter) / float64(l.TotalIters)
+	factor := l.StartFactor + (l.EndFactor-l.StartFactor)*pct
+	newLR := l.baseLR * factor
+	l.optimizer.SetLR(newLR)
+	l.lastLR = newLR
+}
+
+func (l *LinearLR) GetLastLR() float64 { return l.lastLR }
+func (l *LinearLR) String() string {
+	return fmt.Sprintf("LinearLR(start_factor=%.4f, end_factor=%.4f, total_iters=%d, last_lr=%.6f)",
+		l.StartFactor, l.EndFactor, l.TotalIters, l.lastLR)
+}

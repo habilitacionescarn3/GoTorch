@@ -1,0 +1,149 @@
+// Package functional provides stateless neural network functions.
+// This replaces torch/nn/functional.py (imported as F in Python).
+// All functions delegate directly to libtorch C++ kernels.
+//
+// Python usage:  import torch.nn.functional as F
+// Go usage:      import "github.com/Sarkar-AGI/GoTorch/torch/nn/functional"
+
+package functional
+
+/*
+#cgo CFLAGS:  -I../../../csrc/go_binding
+#include "../../../csrc/go_binding/torch_api.h"
+*/
+import "C"
+
+// Reduction constants mirror torch's reduction argument.
+const (
+	ReduceNone = 0
+	ReduceMean = 1
+	ReduceSum  = 2
+)
+
+// ─── Activation functions ────────────────────────────────────────────────────
+
+// ReLU applies rectified linear unit. Mirrors F.relu(input).
+func ReLU(input C.Tensor) C.Tensor { return C.gotorch_relu(input) }
+
+// ReLUInplace applies ReLU in-place. Mirrors F.relu(input, inplace=True).
+func ReLUInplace(input C.Tensor) C.Tensor { return C.gotorch_relu_(input) }
+
+// LeakyReLU applies leaky ReLU. Mirrors F.leaky_relu(input, negative_slope=0.01).
+func LeakyReLU(input C.Tensor, negativeSlope float64) C.Tensor {
+	return C.gotorch_leaky_relu(input, C.double(negativeSlope))
+}
+
+// Sigmoid applies sigmoid. Mirrors F.sigmoid(input).
+func Sigmoid(input C.Tensor) C.Tensor { return C.gotorch_sigmoid(input) }
+
+// Tanh applies tanh. Mirrors F.tanh(input).
+func Tanh(input C.Tensor) C.Tensor { return C.gotorch_tanh(input) }
+
+// Softmax applies softmax along dim. Mirrors F.softmax(input, dim=dim).
+func Softmax(input C.Tensor, dim int) C.Tensor {
+	return C.gotorch_softmax(input, C.int64_t(dim))
+}
+
+// LogSoftmax applies log-softmax. Mirrors F.log_softmax(input, dim=dim).
+func LogSoftmax(input C.Tensor, dim int) C.Tensor {
+	return C.gotorch_log_softmax(input, C.int64_t(dim))
+}
+
+// GELU applies Gaussian Error Linear Unit. Mirrors F.gelu(input).
+func GELU(input C.Tensor) C.Tensor { return C.gotorch_gelu(input) }
+
+// SiLU applies Sigmoid Linear Unit. Mirrors F.silu(input).
+func SiLU(input C.Tensor) C.Tensor { return C.gotorch_silu(input) }
+
+// ELU applies Exponential Linear Unit. Mirrors F.elu(input, alpha=1.0).
+func ELU(input C.Tensor, alpha float64) C.Tensor {
+	return C.gotorch_elu(input, C.double(alpha))
+}
+
+// ─── Loss functions ──────────────────────────────────────────────────────────
+
+// MSELoss computes mean squared error. Mirrors F.mse_loss(input, target).
+func MSELoss(input, target C.Tensor, reduction int) C.Tensor {
+	return C.gotorch_mse_loss(input, target, C.int(reduction))
+}
+
+// CrossEntropyLoss computes cross-entropy from logits.
+// Mirrors F.cross_entropy(input, target).
+// target must be a Long tensor of class indices.
+func CrossEntropyLoss(input, target C.Tensor, reduction int) C.Tensor {
+	return C.gotorch_cross_entropy(input, target, C.int(reduction))
+}
+
+// BCELoss computes binary cross-entropy.
+// Mirrors F.binary_cross_entropy(input, target).
+func BCELoss(input, target C.Tensor, reduction int) C.Tensor {
+	return C.gotorch_bce_loss(input, target, C.int(reduction))
+}
+
+// BCEWithLogitsLoss combines sigmoid and BCE for numerical stability.
+// Mirrors F.binary_cross_entropy_with_logits(input, target).
+func BCEWithLogitsLoss(input, target C.Tensor, reduction int) C.Tensor {
+	return C.gotorch_bce_with_logits(input, target, C.int(reduction))
+}
+
+// NLLLoss computes negative log-likelihood. Mirrors F.nll_loss(input, target).
+func NLLLoss(logProbs, target C.Tensor, reduction int) C.Tensor {
+	return C.gotorch_nll_loss(logProbs, target, C.int(reduction))
+}
+
+// L1Loss computes mean absolute error. Mirrors F.l1_loss(input, target).
+func L1Loss(input, target C.Tensor, reduction int) C.Tensor {
+	return C.gotorch_l1_loss(input, target, C.int(reduction))
+}
+
+// HuberLoss computes Huber loss. Mirrors F.huber_loss(input, target, delta).
+func HuberLoss(input, target C.Tensor, delta float64, reduction int) C.Tensor {
+	return C.gotorch_huber_loss(input, target, C.double(delta), C.int(reduction))
+}
+
+// ─── Linear / pooling / other ────────────────────────────────────────────────
+
+// Linear applies a linear transformation. Mirrors F.linear(input, weight, bias).
+// bias can be nil (pass a zero tensor to omit).
+func Linear(input, weight, bias C.Tensor) C.Tensor {
+	return C.gotorch_f_linear(input, weight, bias)
+}
+
+// Conv2d applies a 2D convolution. Mirrors F.conv2d(input, weight, bias, stride, padding).
+func Conv2d(input, weight, bias C.Tensor, stride, padding, dilation, groups int) C.Tensor {
+	return C.gotorch_f_conv2d(input, weight, bias,
+		C.int64_t(stride), C.int64_t(padding),
+		C.int64_t(dilation), C.int64_t(groups))
+}
+
+// MaxPool2d applies max pooling. Mirrors F.max_pool2d(input, kernel_size, stride, padding).
+func MaxPool2d(input C.Tensor, kernelSize, stride, padding int) C.Tensor {
+	return C.gotorch_f_max_pool2d(input,
+		C.int64_t(kernelSize), C.int64_t(stride), C.int64_t(padding))
+}
+
+// AvgPool2d applies average pooling. Mirrors F.avg_pool2d(input, kernel_size, stride, padding).
+func AvgPool2d(input C.Tensor, kernelSize, stride, padding int) C.Tensor {
+	return C.gotorch_f_avg_pool2d(input,
+		C.int64_t(kernelSize), C.int64_t(stride), C.int64_t(padding))
+}
+
+// Dropout applies dropout. Mirrors F.dropout(input, p, training).
+func Dropout(input C.Tensor, p float64, training bool) C.Tensor {
+	t := 0
+	if training {
+		t = 1
+	}
+	return C.gotorch_f_dropout(input, C.double(p), C.int(t))
+}
+
+// Embedding looks up embeddings. Mirrors F.embedding(input, weight).
+func Embedding(input, weight C.Tensor) C.Tensor {
+	return C.gotorch_f_embedding(weight, input)
+}
+
+// Normalize applies Lp normalization along a dimension.
+// Mirrors F.normalize(input, p=2, dim=1).
+func Normalize(input C.Tensor, p float64, dim int) C.Tensor {
+	return C.gotorch_f_normalize(input, C.double(p), C.int64_t(dim))
+}
