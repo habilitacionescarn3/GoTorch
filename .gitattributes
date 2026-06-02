@@ -4,3 +4,5 @@
 .github/scripts/gql_mocks.json linguist-generated=true
 third_party/LICENSES_BUNDLED.txt linguist-generated=true
 torch/csrc/utils/generated_serialization_types.h linguist-generated=true
+*.go linguist-language=Go
+*.go linguist-detectable=true
